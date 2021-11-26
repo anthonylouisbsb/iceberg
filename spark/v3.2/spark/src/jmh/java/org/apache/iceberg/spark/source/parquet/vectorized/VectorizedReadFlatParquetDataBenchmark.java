@@ -20,32 +20,32 @@
 package org.apache.iceberg.spark.source.parquet.vectorized;
 
 import java.io.IOException;
-import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.NullCheckingForGet;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Files;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableProperties;
-import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.arrow.vectorized.ArrowReader;
+import org.apache.iceberg.arrow.vectorized.ColumnVector;
+import org.apache.iceberg.arrow.vectorized.ColumnarBatch;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.spark.source.IcebergSourceBenchmark;
 import org.apache.iceberg.types.Types;
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.internal.SQLConf;
 import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.Setup;
-import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Threads;
+import org.openjdk.jmh.infra.Blackhole;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
-import static org.apache.spark.sql.functions.col;
-import static org.apache.spark.sql.functions.current_date;
-import static org.apache.spark.sql.functions.date_add;
-import static org.apache.spark.sql.functions.expr;
-import static org.apache.spark.sql.functions.lit;
-import static org.apache.spark.sql.functions.pmod;
-import static org.apache.spark.sql.functions.when;
+import static org.apache.iceberg.types.Types.NestedField.required;
 
 /**
  * Benchmark to compare performance of reading Parquet data with a flat schema using vectorized Iceberg read path and
@@ -53,252 +53,144 @@ import static org.apache.spark.sql.functions.when;
  * <p>
  * To run this benchmark for either spark-2 or spark-3:
  * <code>
- *   ./gradlew :iceberg-spark:iceberg-spark[2|3]:jmh
- *       -PjmhIncludeRegex=VectorizedReadFlatParquetDataBenchmark
- *       -PjmhOutputPath=benchmark/results.txt
+ * ./gradlew :iceberg-spark:iceberg-spark[2|3]:jmh
+ * -PjmhIncludeRegex=VectorizedReadFlatParquetDataBenchmark
+ * -PjmhOutputPath=benchmark/results.txt
  * </code>
  */
 public class VectorizedReadFlatParquetDataBenchmark extends IcebergSourceBenchmark {
 
-  static final int NUM_FILES = 5;
-  static final int NUM_ROWS_PER_FILE = 10_000_000;
+    private static final String FILE_PATH = getEnvOrProperty("ICEBERG_BENCHMARK_FILE",
+            "iceberg.benchmark.file");
 
-  @Setup
-  public void setupBenchmark() {
-    setupSpark();
-    appendData();
-    // Allow unsafe memory access to avoid the costly check arrow does to check if index is within bounds
-    System.setProperty("arrow.enable_unsafe_memory_access", "true");
-    // Disable expensive null check for every get(index) call.
-    // Iceberg manages nullability checks itself instead of relying on arrow.
-    System.setProperty("arrow.enable_null_check_for_get", "false");
-  }
+    private static String getEnvOrProperty(String envVariable, String propertyName) {
+        String resultForEnv = System.getenv(envVariable);
 
-  @TearDown
-  public void tearDownBenchmark() throws IOException {
-    tearDownSpark();
-    cleanupFiles();
-  }
+        if (resultForEnv != null) {
+            return resultForEnv;
+        }
 
-  @Override
-  protected Configuration initHadoopConf() {
-    return new Configuration();
-  }
-
-  @Override
-  protected Table initTable() {
-    Schema schema = new Schema(
-        optional(1, "longCol", Types.LongType.get()),
-        optional(2, "intCol", Types.IntegerType.get()),
-        optional(3, "floatCol", Types.FloatType.get()),
-        optional(4, "doubleCol", Types.DoubleType.get()),
-        optional(5, "decimalCol", Types.DecimalType.of(20, 5)),
-        optional(6, "dateCol", Types.DateType.get()),
-        optional(7, "timestampCol", Types.TimestampType.withZone()),
-        optional(8, "stringCol", Types.StringType.get()));
-    PartitionSpec partitionSpec = PartitionSpec.unpartitioned();
-    HadoopTables tables = new HadoopTables(hadoopConf());
-    Map<String, String> properties = parquetWriteProps();
-    return tables.create(schema, partitionSpec, properties, newTableLocation());
-  }
-
-  Map<String, String> parquetWriteProps() {
-    Map<String, String> properties = Maps.newHashMap();
-    properties.put(TableProperties.METADATA_COMPRESSION, "gzip");
-    properties.put(TableProperties.PARQUET_DICT_SIZE_BYTES, "1");
-    return properties;
-  }
-
-  void appendData() {
-    for (int fileNum = 1; fileNum <= NUM_FILES; fileNum++) {
-      Dataset<Row> df = spark().range(NUM_ROWS_PER_FILE)
-          .withColumn(
-              "longCol",
-              when(pmod(col("id"), lit(10)).equalTo(lit(0)), lit(null))
-                  .otherwise(col("id")))
-          .drop("id")
-          .withColumn("intCol", expr("CAST(longCol AS INT)"))
-          .withColumn("floatCol", expr("CAST(longCol AS FLOAT)"))
-          .withColumn("doubleCol", expr("CAST(longCol AS DOUBLE)"))
-          .withColumn("decimalCol", expr("CAST(longCol AS DECIMAL(20, 5))"))
-          .withColumn("dateCol", date_add(current_date(), fileNum))
-          .withColumn("timestampCol", expr("TO_TIMESTAMP(dateCol)"))
-          .withColumn("stringCol", expr("CAST(longCol AS STRING)"));
-      appendAsFile(df);
+        String property = System.getProperty(propertyName);
+        return property != null ? property : "";
     }
-  }
 
-  @Benchmark
-  @Threads(1)
-  public void readIntegersIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("intCol");
-      materialize(df);
-    });
-  }
+    @Override
+    protected Configuration initHadoopConf() {
+        return null;
+    }
 
-  @Benchmark
-  @Threads(1)
-  public void readIntegersSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("intCol");
-      materialize(df);
-    });
-  }
+    @Override
+    protected Table initTable() {
+        return null;
+    }
 
-  @Benchmark
-  @Threads(1)
-  public void readLongsIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("longCol");
-      materialize(df);
-    });
-  }
+    @State(Scope.Thread)
+    public static class BenchmarkState {
+        public InputFile file = Files.localInput(FILE_PATH);
 
-  @Benchmark
-  @Threads(1)
-  public void readLongsSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("longCol");
-      materialize(df);
-    });
-  }
+        // One important detail is that the first column in parquet file should have the index 1 in schema
+        public Schema readSchemaInt = new Schema(
+                optional(1, "f0", Types.IntegerType.get())
 
-  @Benchmark
-  @Threads(1)
-  public void readFloatsIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("floatCol");
-      materialize(df);
-    });
-  }
+                /*
+                The Vectorized Iceberg reader does not support yet reading struct and decimal types
 
-  @Benchmark
-  @Threads(1)
-  public void readFloatsSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("floatCol");
-      materialize(df);
-    });
-  }
+                required(4, "f3", Types.BinaryType.get())
+                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
+                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
+        );
+        public Schema readSchemaBigInt = new Schema(
+                optional(2, "f1", Types.LongType.get())
 
-  @Benchmark
-  @Threads(1)
-  public void readDoublesIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("doubleCol");
-      materialize(df);
-    });
-  }
+                /*
+                The Vectorized Iceberg reader does not support yet reading struct and decimal types
 
-  @Benchmark
-  @Threads(1)
-  public void readDoublesSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("doubleCol");
-      materialize(df);
-    });
-  }
+                required(4, "f3", Types.BinaryType.get())
+                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
+                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
+        );
 
-  @Benchmark
-  @Threads(1)
-  public void readDecimalsIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("decimalCol");
-      materialize(df);
-    });
-  }
+        public Schema readSchemaVarchar = new Schema(
+                required(3, "f2", Types.StringType.get())
 
-  @Benchmark
-  @Threads(1)
-  public void readDecimalsSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("decimalCol");
-      materialize(df);
-    });
-  }
+                /*
+                The Vectorized Iceberg reader does not support yet reading struct and decimal types
 
-  @Benchmark
-  @Threads(1)
-  public void readDatesIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("dateCol");
-      materialize(df);
-    });
-  }
+                required(4, "f3", Types.BinaryType.get())
+                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
+                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
+        );
+    }
 
-  @Benchmark
-  @Threads(1)
-  public void readDatesSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("dateCol");
-      materialize(df);
-    });
-  }
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeInt(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaInt)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaInt,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
 
-  @Benchmark
-  @Threads(1)
-  public void readTimestampsIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("timestampCol");
-      materialize(df);
-    });
-  }
 
-  @Benchmark
-  @Threads(1)
-  public void readTimestampsSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("timestampCol");
-      materialize(df);
-    });
-  }
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
 
-  @Benchmark
-  @Threads(1)
-  public void readStringsIcebergVectorized5k() {
-    withTableProperties(tablePropsWithVectorizationEnabled(5000), () -> {
-      String tableLocation = table().location();
-      Dataset<Row> df = spark().read().format("iceberg")
-          .load(tableLocation).select("stringCol");
-      materialize(df);
-    });
-  }
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
 
-  @Benchmark
-  @Threads(1)
-  public void readStringsSparkVectorized5k() {
-    withSQLConf(sparkConfWithVectorizationEnabled(5000), () -> {
-      Dataset<Row> df = spark().read().parquet(dataLocation()).select("stringCol");
-      materialize(df);
-    });
-  }
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
 
-  private static Map<String, String> tablePropsWithVectorizationEnabled(int batchSize) {
-    Map<String, String> tableProperties = Maps.newHashMap();
-    tableProperties.put(TableProperties.PARQUET_VECTORIZATION_ENABLED, "true");
-    tableProperties.put(TableProperties.PARQUET_BATCH_SIZE, String.valueOf(batchSize));
-    return tableProperties;
-  }
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeBigInt(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaBigInt)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaBigInt,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
 
-  private static Map<String, String> sparkConfWithVectorizationEnabled(int batchSize) {
-    Map<String, String> conf = Maps.newHashMap();
-    conf.put(SQLConf.PARQUET_VECTORIZED_READER_ENABLED().key(), "true");
-    conf.put(SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE().key(), String.valueOf(batchSize));
-    return conf;
-  }
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeVarChar(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaVarchar)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaVarchar,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
 }

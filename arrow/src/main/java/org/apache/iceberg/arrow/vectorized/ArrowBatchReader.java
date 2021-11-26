@@ -27,7 +27,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
  * A collection of vectorized readers per column (in the expected read schema) and Arrow Vector holders. This class owns
  * the Arrow vectors and is responsible for closing the Arrow vectors.
  */
-class ArrowBatchReader extends BaseBatchReader<ColumnarBatch> {
+public class ArrowBatchReader extends BaseBatchReader<ColumnarBatch> {
 
   ArrowBatchReader(List<VectorizedReader<?>> readers) {
     super(readers);

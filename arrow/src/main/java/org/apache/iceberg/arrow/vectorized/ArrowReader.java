@@ -195,7 +195,7 @@ public class ArrowReader extends CloseableGroup {
    * Reads the data file and returns an iterator of {@link VectorSchemaRoot}.
    * Only Parquet data file format is supported.
    */
-  private static final class VectorizedCombinedScanIterator implements CloseableIterator<ColumnarBatch> {
+  public static final class VectorizedCombinedScanIterator implements CloseableIterator<ColumnarBatch> {
 
     private final Iterator<FileScanTask> fileItr;
     private final Map<String, InputFile> inputFiles;
@@ -366,7 +366,7 @@ public class ArrowReader extends CloseableGroup {
      * @param fileSchema             Schema of the data file.
      * @param setArrowValidityVector Indicates whether to set the validity vector in Arrow vectors.
      */
-    private static ArrowBatchReader buildReader(
+    public static ArrowBatchReader buildReader(
         Schema expectedSchema,
         MessageType fileSchema,
         boolean setArrowValidityVector) {
