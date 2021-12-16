@@ -91,34 +91,34 @@ public class VectorizedReadFlatParquetDataBenchmark extends IcebergSourceBenchma
         // One important detail is that the first column in parquet file should have the index 1 in schema
         public Schema readSchemaInt = new Schema(
                 optional(1, "f0", Types.IntegerType.get())
-
-                /*
-                The Vectorized Iceberg reader does not support yet reading struct and decimal types
-
-                required(4, "f3", Types.BinaryType.get())
-                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
-                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
         );
+
         public Schema readSchemaBigInt = new Schema(
                 optional(2, "f1", Types.LongType.get())
+        );
 
-                /*
-                The Vectorized Iceberg reader does not support yet reading struct and decimal types
+        public Schema readSchemaFloat = new Schema(
+                optional(3, "f2", Types.FloatType.get())
+        );
 
-                required(4, "f3", Types.BinaryType.get())
-                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
-                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
+        public Schema readSchemaDouble = new Schema(
+                optional(4, "f3", Types.DoubleType.get())
         );
 
         public Schema readSchemaVarchar = new Schema(
-                required(3, "f2", Types.StringType.get())
+                optional(5, "f4", Types.StringType.get())
+        );
 
-                /*
-                The Vectorized Iceberg reader does not support yet reading struct and decimal types
+        public Schema readSchemaDate = new Schema(
+                optional(7, "f6", Types.DateType.get())
+        );
 
-                required(4, "f3", Types.BinaryType.get())
-                required(4, "f4", Types.StructType.of(required(5, "test2", Types.IntegerType.get()))),
-                required(6, "f5", Types.ListType.ofRequired(7, Types.StructType.of(required(8, "test3", Types.IntegerType.get()))))*/
+        public Schema readSchemaTime = new Schema(
+                optional(8, "f7", Types.TimeType.get())
+        );
+
+        public Schema readSchemaTimestamp = new Schema(
+                optional(9, "f8", Types.TimestampType.withoutZone())
         );
     }
 
@@ -154,6 +154,126 @@ public class VectorizedReadFlatParquetDataBenchmark extends IcebergSourceBenchma
         Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
                 .project(state.readSchemaBigInt)
                 .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaBigInt,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeFloat(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaFloat)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaFloat,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeDouble(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaDouble)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaDouble,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeDate(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaDate)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaDate,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeTime(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaTime)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaTime,
+                        fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
+
+
+        try (CloseableIterable<ColumnarBatch> batchReader =
+                     readBuilder.build()) {
+
+            for (ColumnarBatch batch : batchReader) {
+                ColumnVector columnVector = batch.column(0);
+                FieldVector fieldVector = columnVector.getFieldVector();
+
+                // Use this to avoid constant folding by the JVM
+                blackhole.consume(fieldVector);
+            }
+        }
+    }
+
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MILLISECONDS)
+    @Threads(1)
+    public void testColumnPerTimeTimestamp(BenchmarkState state, Blackhole blackhole) throws IOException {
+        Parquet.ReadBuilder readBuilder = Parquet.read(state.file)
+                .project(state.readSchemaTimestamp)
+                .createBatchedReaderFunc(fileSchema -> ArrowReader.VectorizedCombinedScanIterator.buildReader(state.readSchemaTimestamp,
                         fileSchema, /* setArrowValidityVector */ NullCheckingForGet.NULL_CHECKING_ENABLED));
 
 
